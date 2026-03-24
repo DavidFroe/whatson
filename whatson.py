@@ -354,10 +354,29 @@ class WhatsAppEngine:
         # Explicitly requested headless state overrides config later
         self._explicit_headless: Optional[bool] = headless
 
+    @staticmethod
+    def _kill_stale_browser(user_data_dir: str) -> None:
+        """Kill any lingering Chromium processes holding the profile lock."""
+        import subprocess as _sp
+        try:
+            _sp.run(
+                ["pkill", "-9", "-f", f"user-data-dir={user_data_dir}"],
+                timeout=3, capture_output=True,
+            )
+            time.sleep(0.5)
+        except Exception:
+            pass
+        for lock_name in ["SingletonLock", "SingletonCookie", "SingletonSocket"]:
+            try:
+                (Path(user_data_dir) / lock_name).unlink(missing_ok=True)
+            except Exception:
+                pass
+
     def start(self, force_headed: bool = False) -> None:
         """Launch (or connect to) the browser with a persistent context."""
         user_data_dir = self.cfg["user_data_dir"]
         Path(user_data_dir).mkdir(parents=True, exist_ok=True)
+        self._kill_stale_browser(user_data_dir)
 
         headless = self.cfg.get("browser_headless", True)
         if self._explicit_headless is not None:
@@ -384,8 +403,8 @@ class WhatsAppEngine:
 
     def stop(self) -> None:
         """Close browser and Playwright cleanly, flushing IndexedDB first."""
-        # Navigate to about:blank before closing — this unloads the WhatsApp
-        # page and forces Chromium to flush all pending IndexedDB writes to disk.
+        user_data_dir = self.cfg["user_data_dir"]
+        # Navigate to about:blank — unloads WA page, flushes IndexedDB writes
         if self._page is not None:
             try:
                 self._page.goto("about:blank", timeout=5_000,
@@ -405,6 +424,8 @@ class WhatsAppEngine:
             except Exception:
                 pass
             self._pw = None
+        # Belt + suspenders: forcefully kill any surviving browser process
+        self._kill_stale_browser(user_data_dir)
 
     @property
     def page(self) -> Page:
