@@ -501,7 +501,10 @@ class WhatsAppEngine:
 
             try:
                 self.page.wait_for_selector(SEL_SIDE_PANEL, timeout=2_000)
-                print("[whatsON] Erfolgreich authentifiziert!", file=sys.stderr)
+                print("[whatsON] Erfolgreich authentifiziert! Speichere Session …", file=sys.stderr)
+                # Wait for WhatsApp to fully write its auth tokens to IndexedDB/cookies
+                self.page.wait_for_timeout(5_000)
+                print("[whatsON] Session gespeichert.", file=sys.stderr)
                 return
             except PlaywrightTimeout:
                 pass
@@ -516,7 +519,7 @@ class WhatsAppEngine:
         current_url = self.page.url or ""
         if "web.whatsapp.com" in current_url:
             try:
-                self.page.wait_for_selector(SEL_SIDE_PANEL, timeout=5_000)
+                self.page.wait_for_selector(SEL_SIDE_PANEL, timeout=30_000)
                 return
             except PlaywrightTimeout:
                 pass
