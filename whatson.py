@@ -37,6 +37,11 @@ from tinydb import TinyDB, where
 
 __version__ = "1.1.0"
 
+
+class NotAuthenticatedError(Exception):
+    """Raised when WhatsApp Web session is missing or expired."""
+
+
 WHATSON_HOME = Path.home() / ".whatson"
 USER_CONFIG_PATH = WHATSON_HOME / "config.yaml"
 # Fallback to local config if present in the same dir
@@ -519,13 +524,13 @@ class WhatsAppEngine:
         self.open_whatsapp()
 
         try:
-            self.page.wait_for_selector(SEL_SIDE_PANEL, timeout=15_000)
+            self.page.wait_for_selector(SEL_SIDE_PANEL, timeout=45_000)
             return
         except PlaywrightTimeout:
             pass
 
-        raise SystemExit(
-            "[whatsON] Nicht authentifiziert — bitte zuerst 'wo auth' ausführen."
+        raise NotAuthenticatedError(
+            "Nicht authentifiziert — bitte zuerst 'wo auth' ausführen."
         )
 
     def _search_and_open_chat(self, name: str) -> None:
@@ -2514,7 +2519,11 @@ def status_cmd():
 
 def app_entry():
     """Entry point for the setuptools console script."""
-    app()
+    try:
+        app()
+    except NotAuthenticatedError as e:
+        typer.echo(f"[whatsON] {e}\nTipp: 'wo auth' ausführen.", err=True)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
