@@ -489,7 +489,9 @@ class WhatsAppEngine:
         except PlaywrightTimeout:
             pass
 
-        self.auth_qr_headless()
+        raise SystemExit(
+            "[whatsON] Nicht authentifiziert — bitte zuerst 'wo auth' ausführen."
+        )
 
     def _search_and_open_chat(self, name: str) -> None:
         """Use the search box to find and open a conversation by name."""
