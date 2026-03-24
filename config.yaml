@@ -1,0 +1,15 @@
+# whatson configuration
+# Copy this file to ~/.whatson/config.yaml to customize.
+
+# How often the scheduler/poll loop checks (in seconds)
+poll_interval: 60
+
+# Shell command executed when a new message arrives during --poll
+# Available placeholders: {conversation}, {message}
+poll_command: 'echo "New message in {conversation}: {message}"'
+
+# Run browser in headless mode (true after first QR scan)
+browser_headless: true
+
+# Browser user-data directory for session persistence
+user_data_dir: "~/.whatson/browser_data"
