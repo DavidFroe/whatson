@@ -560,12 +560,25 @@ class WhatsAppEngine:
 
             try:
                 self.page.wait_for_selector(SEL_SIDE_PANEL, timeout=2_000)
-                print("[whatsON] Erfolgreich authentifiziert! Speichere Session …", file=sys.stderr)
-                # Wait for WhatsApp to fully write its auth tokens to IndexedDB/cookies
-                self.page.wait_for_timeout(5_000)
-                print("[whatsON] Session gespeichert.", file=sys.stderr)
-                return
             except PlaywrightTimeout:
+                pass
+            except Exception:
+                # WhatsApp navigated to a new page during QR auth — update handle
+                try:
+                    if self._context and self._context.pages:
+                        self._page = self._context.pages[0]
+                except Exception:
+                    pass
+                continue
+
+            # Check if we're on the authenticated view (pane-side visible)
+            try:
+                if self.page.query_selector(SEL_SIDE_PANEL):
+                    print("[whatsON] Erfolgreich authentifiziert! Speichere Session …", file=sys.stderr)
+                    self.page.wait_for_timeout(5_000)
+                    print("[whatsON] Session gespeichert.", file=sys.stderr)
+                    return
+            except Exception:
                 pass
 
         raise RuntimeError("Login-Timeout — QR-Code wurde nicht gescannt.")
