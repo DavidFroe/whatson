@@ -415,17 +415,57 @@ class WhatsAppEngine:
         except PlaywrightTimeout:
             return False
 
+    def _extract_qr_data(self) -> str:
+        """Try to extract raw QR code data from the WhatsApp Web page.
+
+        Attempts DOM attribute extraction first (fast), then injects jsQR to
+        decode the canvas pixel data (works with all WhatsApp Web versions).
+        Returns empty string if nothing found.
+        """
+        # 1) DOM attribute – older WA Web versions stored it in data-ref
+        qr_data: str = self.page.evaluate(
+            "document.querySelector('div[data-ref]')?.dataset?.ref"
+            " || document.querySelector('[data-ref]')?.dataset?.ref"
+            " || document.querySelector('[data-testid=\"qrcode\"] [data-ref]')?.dataset?.ref"
+            " || ''"
+        )
+        if qr_data and len(qr_data) > 10:
+            return qr_data
+
+        # 2) Canvas decode via jsQR (works with current WA Web versions)
+        try:
+            self.page.add_script_tag(
+                url="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"
+            )
+            self.page.wait_for_timeout(800)
+            qr_data = self.page.evaluate("""() => {
+                const canvas = document.querySelector('canvas');
+                if (!canvas) return '';
+                try {
+                    const ctx = canvas.getContext('2d');
+                    const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const code = jsQR(d.data, d.width, d.height);
+                    return code ? code.data : '';
+                } catch(e) { return ''; }
+            }""")
+            if qr_data and len(qr_data) > 10:
+                return qr_data
+        except Exception:
+            pass
+
+        return ""
+
     def auth_qr_headless(self, qr_path: Optional[Path] = None, timeout_seconds: int = 180) -> None:
         """Authenticate via QR code while staying headless (SSH-compatible).
 
-        Extracts the QR code data from the DOM and renders it as ASCII art
+        Decodes the QR code data from the page and renders it as ASCII art
         directly in the terminal — no display or image viewer required.
-        Falls back to saving a screenshot if DOM extraction fails.
+        Falls back to saving a screenshot only if decoding fails.
         """
         if qr_path is None:
             qr_path = Path("/tmp/whatson-qr.png")
 
-        print("[whatson] QR-Code Scan erforderlich. Gleich im Terminal angezeigt …", file=sys.stderr)
+        print("[whatsON] QR-Code Scan erforderlich. Gleich im Terminal angezeigt …", file=sys.stderr)
 
         deadline = time.monotonic() + timeout_seconds
         last_render = 0.0
@@ -434,34 +474,29 @@ class WhatsAppEngine:
             now = time.monotonic()
             if now - last_render >= 18:
                 try:
-                    # Try to read QR data directly from the DOM (works in most WA Web versions)
-                    qr_data = self.page.evaluate(
-                        "document.querySelector('div[data-ref]')?.dataset?.ref "
-                        "|| document.querySelector('[data-testid=\"qrcode\"] div[data-ref]')?.dataset?.ref "
-                        "|| ''"
-                    )
+                    qr_data = self._extract_qr_data()
                     if qr_data:
                         _render_qr_terminal(qr_data)
-                        print("[whatson] Bitte jetzt QR-Code mit dem Handy scannen …", file=sys.stderr)
+                        print("[whatsON] Bitte jetzt QR-Code mit dem Handy scannen …", file=sys.stderr)
                     else:
-                        # Fallback: save screenshot
+                        # Last resort: save screenshot
                         el = self.page.query_selector(SEL_QR)
                         if el:
                             el.screenshot(path=str(qr_path))
                         else:
                             self.page.screenshot(path=str(qr_path))
                         print(
-                            f"[whatson] QR-Code als Screenshot gespeichert: {qr_path}\n"
-                            f"[whatson] Tipp: scp <server>:{qr_path} . — dann lokal öffnen.",
+                            f"[whatsON] QR-Code als Screenshot gespeichert: {qr_path}\n"
+                            f"[whatsON] Tipp: scp <server>:{qr_path} . — dann lokal öffnen.",
                             file=sys.stderr,
                         )
                     last_render = time.monotonic()
                 except Exception as exc:
-                    print(f"[whatson] QR-Fehler: {exc}", file=sys.stderr)
+                    print(f"[whatsON] QR-Fehler: {exc}", file=sys.stderr)
 
             try:
                 self.page.wait_for_selector(SEL_SIDE_PANEL, timeout=2_000)
-                print("[whatson] Erfolgreich authentifiziert!", file=sys.stderr)
+                print("[whatsON] Erfolgreich authentifiziert!", file=sys.stderr)
                 return
             except PlaywrightTimeout:
                 pass

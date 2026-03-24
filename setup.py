@@ -12,6 +12,7 @@ setup(
         "playwright>=1.40.0",
         "tinydb>=4.8.0",
         "pyyaml>=6.0",
+        "qrcode>=7.0",
     ],
     entry_points={
         "console_scripts": [
