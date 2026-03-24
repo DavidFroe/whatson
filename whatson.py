@@ -314,6 +314,23 @@ MAX_GOTO_RETRIES = 3
 RETRY_DELAY_SECS = 3
 
 
+def _get_jsqr_content() -> Optional[str]:
+    """Return jsQR library JS, downloading and caching on first use."""
+    cache = WHATSON_HOME / "jsqr.min.js"
+    if cache.exists() and cache.stat().st_size > 1000:
+        return cache.read_text()
+    try:
+        import urllib.request
+        url = "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"
+        with urllib.request.urlopen(url, timeout=15) as resp:
+            content = resp.read().decode("utf-8")
+        WHATSON_HOME.mkdir(parents=True, exist_ok=True)
+        cache.write_text(content)
+        return content
+    except Exception:
+        return None
+
+
 def _render_qr_terminal(data: str) -> None:
     """Render QR code data as ASCII art directly in the terminal."""
     try:
@@ -366,7 +383,15 @@ class WhatsAppEngine:
         self._page = self._context.pages[0] if self._context.pages else self._context.new_page()
 
     def stop(self) -> None:
-        """Close browser and Playwright cleanly."""
+        """Close browser and Playwright cleanly, flushing IndexedDB first."""
+        # Navigate to about:blank before closing — this unloads the WhatsApp
+        # page and forces Chromium to flush all pending IndexedDB writes to disk.
+        if self._page is not None:
+            try:
+                self._page.goto("about:blank", timeout=5_000,
+                                wait_until="domcontentloaded")
+            except Exception:
+                pass
         self._page = None
         if self._context:
             try:
@@ -437,26 +462,26 @@ class WhatsAppEngine:
         if qr_data and len(qr_data) > 10:
             return qr_data
 
-        # 2) jsQR: inject library, decode the canvas pixel data
-        try:
-            self.page.add_script_tag(
-                url="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"
-            )
-            self.page.wait_for_timeout(800)
-            qr_data = self.page.evaluate("""() => {
-                const canvas = document.querySelector('canvas');
-                if (!canvas) return '';
-                try {
-                    const ctx = canvas.getContext('2d');
-                    const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
-                    const code = jsQR(d.data, d.width, d.height);
-                    return code ? code.data : '';
-                } catch(e) { return ''; }
-            }""")
-            if qr_data and len(qr_data) > 10:
-                return qr_data
-        except Exception:
-            pass
+        # 2) jsQR: inject library (local cache), decode the canvas pixel data
+        jsqr_content = _get_jsqr_content()
+        if jsqr_content:
+            try:
+                self.page.add_script_tag(content=jsqr_content)
+                self.page.wait_for_timeout(500)
+                qr_data = self.page.evaluate("""() => {
+                    const canvas = document.querySelector('canvas');
+                    if (!canvas) return '';
+                    try {
+                        const ctx = canvas.getContext('2d');
+                        const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                        const code = jsQR(d.data, d.width, d.height);
+                        return code ? code.data : '';
+                    } catch(e) { return ''; }
+                }""")
+                if qr_data and len(qr_data) > 10:
+                    return qr_data
+            except Exception:
+                pass
 
         return ""
 
