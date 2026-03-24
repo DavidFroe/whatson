@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name="whatson",
-    version="1.0.0",
+    version="1.1.0",
     description="WhatsApp Web CLI tool powered by Playwright browser automation",
     author="David",
     py_modules=["whatson"],
@@ -16,6 +16,7 @@ setup(
     entry_points={
         "console_scripts": [
             "whatson=whatson:app_entry",
+            "wo=whatson:app_entry",
         ],
     },
 )

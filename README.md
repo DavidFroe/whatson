@@ -1,11 +1,12 @@
-# whatson — WhatsApp Web CLI
+# whatsON — WhatsApp Web CLI  (v1.1.0)
 
 Command-line tool for WhatsApp Web automation, powered by Playwright.
+Aufrufbar als **`wo`** (Kurzform) oder **`whatson`**.
 
 ## Installation
 
 ```bash
-cd /home/david/whatson
+cd /home/david/whatsON
 pip install -e .
 playwright install chromium
 ```
@@ -13,31 +14,29 @@ playwright install chromium
 ## Usage
 
 ```bash
-# Check authentication status
-whatson status
+# Authentifizierung prüfen
+wo status
 
-# List active conversations
-whatson conversation
+# Konversationen auflisten
+wo list
 
-# Read chat history
-whatson get "Contact Name"
+# Nachrichten herunterladen
+wo get all
 
-# Send a message
-whatson chat "Contact Name" --text "Hello!"
+# Chat-Verlauf anzeigen
+wo show "Kontakt Name"
 
-# Schedule a message
-whatson plan "Contact Name" --text "Reminder!" --time "2026-03-01 09:00"
+# Nachricht senden
+wo send "Kontakt Name" "Hallo!"
 
-# List / delete scheduled messages
-whatson plan-list
-whatson plan-delete <plan_id>
+# Scheduler steuern
+wo scheduler start
 
-# Run the scheduler daemon (sends due plans, runs continuously)
-whatson run-scheduler
-
-# Poll a conversation for new messages
-whatson poll "Contact Name"
+# Hilfe
+wo --help
 ```
+
+> Alle Befehle funktionieren auch mit `whatson` statt `wo`.
 
 ## Configuration
 
@@ -52,4 +51,6 @@ Settings live in `~/.whatson/config.yaml` (auto-created on first run):
 
 ## First Run
 
-On first use, `whatson` opens a visible browser window so you can scan the WhatsApp Web QR code. After that, the session is persisted and subsequent runs are headless.
+On first use, run `wo auth` to open a visible browser window and scan the
+WhatsApp Web QR code. After that, the session is persisted and subsequent
+runs are headless.

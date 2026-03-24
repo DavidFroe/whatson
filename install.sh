@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 
-echo "Installiere Whatson..."
+echo "Installiere whatsON..."
 pip install --user -e . --break-system-packages || pip install --user -e .
-echo "Installation abgeschlossen. Führe 'whatson --help' aus."
+echo "Installation abgeschlossen. Führe 'wo --help' oder 'whatson --help' aus."

@@ -35,6 +35,8 @@ from tinydb import TinyDB, where
 # 1. CONFIGURATION
 # ==============================================================================
 
+__version__ = "1.1.0"
+
 WHATSON_HOME = Path.home() / ".whatson"
 USER_CONFIG_PATH = WHATSON_HOME / "config.yaml"
 # Fallback to local config if present in the same dir
@@ -267,31 +269,16 @@ def _find_new_messages(
 ) -> List[Dict[str, str]]:
     """
     Compare local vs remote messages and return only the new ones.
-    Matches by comparing the text+time of the last local message against the remote list.
+    Uses a set of (time, text) tuples — order-independent, robust against
+    reverse()/scroll-order artifacts.
     """
     if not local_messages:
         return remote_messages
     if not remote_messages:
         return []
 
-    last_local = local_messages[-1]
-    last_text = last_local.get("text", "")
-    last_time = last_local.get("time", "")
-
-    # Find the position of the last known message in the remote list
-    match_idx = -1
-    for i in range(len(remote_messages) - 1, -1, -1):
-        r = remote_messages[i]
-        if r.get("text") == last_text and r.get("time") == last_time:
-            match_idx = i
-            break
-
-    if match_idx == -1:
-        # Last local message not found in remote — could be scrolled away.
-        return remote_messages
-
-    # Return everything after the match
-    return remote_messages[match_idx + 1:]
+    known = {(m.get("time", ""), m.get("text", "")) for m in local_messages}
+    return [m for m in remote_messages if (m.get("time", ""), m.get("text", "")) not in known]
 
 
 # ==============================================================================
@@ -691,12 +678,18 @@ class WhatsAppEngine:
         if VERBOSE:
             typer.echo(f"    [verbose] Chat geöffnet. Prüfe DOM ...", err=True)
 
-        # Prüfe ob der Chat wirklich geöffnet ist (kurzes Timeout!)
+        # Warten bis #main da ist, dann bis Nachrichten gerendert sind
         try:
             self.page.wait_for_selector('#main', timeout=10_000)
         except Exception:
             pass
         _vt("#main Selektor geprüft")
+        try:
+            self.page.wait_for_selector('div.copyable-text', timeout=8_000)
+        except Exception:
+            pass
+        self.page.wait_for_timeout(1200)  # DOM stabilisieren lassen
+        _vt("Nachrichten gerendert")
 
         main_panel = self.page.query_selector('#main')
         if not main_panel:
@@ -756,6 +749,14 @@ class WhatsAppEngine:
                 accumulated[key] = rm
                 
         if initial_batch and _check_found_stop_msg(initial_batch):
+            # stop_msg gefunden, aber es könnten noch NEUERE Nachrichten nach ihr
+            # existieren die noch nicht im DOM sind → einmal extra warten + nochmal extrahieren
+            self.page.wait_for_timeout(2000)
+            extra_batch = self.page.evaluate(self._JS_EXTRACT_MESSAGES)
+            for rm in (extra_batch or []):
+                key = f"{rm.get('pre', '')}|||{rm.get('text', '')}"
+                if key not in accumulated:
+                    accumulated[key] = rm
             found_stop = True
 
         prev_unique_count = len(accumulated)
@@ -1054,15 +1055,16 @@ class WhatsAppEngine:
 # 5. CLI APP (Typer)
 # ==============================================================================
 
-HELP_TEXT = """
-WhatsApp Web CLI tool - lokaler Speicher.
+HELP_TEXT = f"""
+whatsON v{__version__} — WhatsApp Web CLI tool, lokaler Speicher.
 
 Nachrichten werden in ~/.whatson/store/ gespeichert.
-Erster Schritt: 'whatson get all' zum Herunterladen.
+Erster Schritt: 'wo get all' zum Herunterladen.
 """
 
 EPILOG_TEXT = """
-Schnellstart: whatson get all && whatson list && whatson show 1
+Schnellstart: wo get all && wo list && wo show 1
+            (auch als 'whatson ...' aufrufbar)
 """
 
 app = typer.Typer(
@@ -1456,6 +1458,69 @@ def fetch_cmd(
         _fetch_one(name, limit, json_out=json_out)
 
 
+@app.command("scan", rich_help_panel="Nachrichten")
+def scan_cmd(
+    name: str = typer.Argument(..., help="Chat-ID oder Name"),
+    hook: Optional[str] = typer.Option(None, "-w", "--hook", help="Wachtler Hook-ID (z.B. 3b) – push bei neuen Nachrichten"),
+    limit: int = typer.Option(50, "-n", "--limit", help="Max Nachrichten zum Vergleichen"),
+    json_out: bool = typer.Option(False, "--json", help="Ergebnis als JSON ausgeben"),
+):
+    """
+    Prüft eine Konversation auf neue Nachrichten.
+    Bei neuen Nachrichten und gesetztem --hook/-w wird automatisch
+    'wachtler <hookid> push <json>' aufgerufen, sodass der Wachtler-Daemon
+    die definierte Hook-Aktion ausführt (z.B. TTY-Injection auf Ellas Konsole).
+
+    Beispiele:
+        whatson scan 2 -w 3b          Prüfe Chat 2, push an Hook 3b wenn neu
+        whatson scan "KI Gruppe" -w 3b --json
+    """
+    resolved = _resolve_id(name)
+    engine = WhatsAppEngine()
+    result = {}
+    try:
+        engine.start()
+        local_msgs = load_messages(resolved)
+        stop_msg = local_msgs[-1] if local_msgs else None
+        remote_msgs = engine.get_chat_history(resolved, limit=limit, stop_at_msg=stop_msg)
+        new_msgs = _find_new_messages(local_msgs, remote_msgs)
+
+        if new_msgs:
+            count = append_messages(resolved, new_msgs)
+            typer.echo(f"[whatson] {resolved}: +{count} neue Nachrichten.", err=True)
+            result = {
+                "name": resolved,
+                "new_messages": count,
+                "new": new_msgs,
+                "status": "updated",
+                "trigger_new_message": 1,
+                "last": new_msgs[-1] if new_msgs else {}
+            }
+            if hook:
+                data = json.dumps(result, ensure_ascii=False)
+                r = subprocess.run(
+                    ["wachtler", hook, "push", data],
+                    capture_output=True, text=True
+                )
+                if r.returncode == 0:
+                    typer.echo(f"[whatson] → Wachtler Hook {hook}: push ok", err=True)
+                else:
+                    typer.echo(f"[whatson] → Wachtler Hook {hook}: push fehlgeschlagen: {r.stderr.strip()}", err=True)
+        else:
+            typer.echo(f"[whatson] {resolved}: keine neuen Nachrichten.", err=True)
+            result = {
+                "name": resolved,
+                "new_messages": 0,
+                "status": "up_to_date",
+                "trigger_new_message": 0,
+            }
+    finally:
+        engine.stop()
+
+    if json_out:
+        _json_out(result)
+
+
 def _fetch_all(limit: int, json_out: bool = False):
     entries = _get_all_registered()
     if not entries:
@@ -1485,11 +1550,17 @@ def _fetch_all(limit: int, json_out: bool = False):
                 if new_msgs:
                     count = append_messages(cname, new_msgs)
                     total_new += count
+                    last = new_msgs[-1]
                     typer.echo(f"  [{e['id']}] {cname}: +{count} neue Nachrichten", err=True)
-                    results.append({"id": e["id"], "name": cname, "new_messages": count, "status": "updated"})
+                    results.append({"id": e["id"], "name": cname, "new_messages": count, "status": "updated",
+                                    "trigger_new_message": 1,
+                                    "last_message": {"time": last.get("time", ""), "sender": last.get("sender", last.get("pre", "")), "text": last.get("text", "")}})
                 else:
+                    last = local_msgs[-1] if local_msgs else {}
                     typer.echo(f"  [{e['id']}] {cname}: aktuell ✓", err=True)
-                    results.append({"id": e["id"], "name": cname, "new_messages": 0, "status": "up_to_date"})
+                    results.append({"id": e["id"], "name": cname, "new_messages": 0, "status": "up_to_date",
+                                    "trigger_new_message": 0,
+                                    "last_message": {"time": last.get("time", ""), "sender": last.get("sender", last.get("pre", "")), "text": last.get("text", "")}})
             except Exception as exc:
                 err_short = str(exc).split("\n")[0][:80]
                 typer.echo(f"  [{e['id']}] {cname}: FEHLER: {err_short}", err=True)
@@ -1520,11 +1591,20 @@ def _fetch_one(name_or_id: str, limit: int, json_out: bool = False):
         if new_msgs:
             count = append_messages(resolved, new_msgs)
             total = len(local_msgs) + count
+            last = new_msgs[-1]
             typer.echo(f"[whatson] {resolved}: +{count} neue Nachrichten (gesamt: {total})", err=True)
-            result = {"name": resolved, "new_messages": count, "total_messages": total, "status": "updated"}
+            typer.echo(f"  letzte neue: [{last.get('time', '?')}] {last.get('text', '')[:60]}", err=True)
+            result = {"name": resolved, "new_messages": count, "total_messages": total,
+                      "status": "updated", "trigger_new_message": 1,
+                      "last_message": {"time": last.get("time", ""), "sender": last.get("sender", last.get("pre", "")), "text": last.get("text", "")}}
         else:
+            all_local = load_messages(resolved)
+            last = all_local[-1] if all_local else {}
             typer.echo(f"[whatson] {resolved}: keine neuen Nachrichten.", err=True)
-            result = {"name": resolved, "new_messages": 0, "total_messages": len(local_msgs), "status": "up_to_date"}
+            typer.echo(f"  letzte bekannte: [{last.get('time', '?')}] {last.get('text', '')[:60]}", err=True)
+            result = {"name": resolved, "new_messages": 0, "total_messages": len(local_msgs),
+                      "status": "up_to_date", "trigger_new_message": 0,
+                      "last_message": {"time": last.get("time", ""), "sender": last.get("sender", last.get("pre", "")), "text": last.get("text", "")}}
     finally:
         engine.stop()
 
@@ -2223,6 +2303,80 @@ def scheduler_cmd(
     else:
         typer.echo("Fehler: Aktion muss 'start', 'stop', 'restart' oder 'status' sein.", err=True)
         raise typer.Exit(1)
+
+
+# ──────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────
+# SCAN – Konversation überwachen, Wachtler-Hook triggern
+# ──────────────────────────────────────────────────────────────────
+
+@app.command("scan", rich_help_panel="Nachrichten")
+def scan_cmd(
+    name: str = typer.Argument(..., help="ID oder Name der Konversation."),
+    wachtler_hook: Optional[str] = typer.Option(None, "-w", "--wachtler", help="Wachtler-Hook ID (z.B. 3b) — wird getriggert wenn neue Nachrichten ankommen."),
+    interval: int = typer.Option(60, "-i", "--interval", help="Prüfintervall in Sekunden (default: 60)."),
+    json_out: bool = typer.Option(False, "--json", help="Ergebnis als JSON ausgeben."),
+):
+    """
+    Überwacht eine Konversation auf neue Nachrichten.
+    Stoppt und triggert einen Wachtler-Hook sobald neue Nachrichten ankommen.
+
+    Beispiele:
+        whatson scan 2 -w 3b           Alle 60s prüfen, bei neuen Hook 3b triggern
+        whatson scan 2 -w 3b -i 30     Alle 30s prüfen
+        whatson scan "KI Gruppe" -w 3b
+    """
+    resolved = _resolve_id(name)
+    typer.echo(f"[whatson scan] Überwache '{resolved}' alle {interval}s …", err=True)
+    if wachtler_hook:
+        typer.echo(f"[whatson scan] Wachtler-Hook: {wachtler_hook}", err=True)
+
+    engine = WhatsAppEngine()
+    try:
+        engine.start()
+        while True:
+            try:
+                engine.ensure_authenticated()
+                local_msgs = load_messages(resolved)
+                stop_msg = local_msgs[-1] if local_msgs else None
+
+                remote_msgs = engine.get_chat_history(resolved, limit=20, stop_at_msg=stop_msg)
+                new_msgs = _find_new_messages(local_msgs, remote_msgs)
+
+                if new_msgs:
+                    count = append_messages(resolved, new_msgs)
+                    last = new_msgs[-1]
+                    typer.echo(f"[whatson scan] ✓ {resolved}: +{count} neue Nachrichten", err=True)
+
+                    result = {
+                        "name": resolved, "new_messages": count, "trigger_new_message": 1,
+                        "last_message": {"time": last.get("time", ""), "sender": last.get("sender", ""), "text": last.get("text", "")},
+                    }
+                    if json_out:
+                        _json_out(result)
+
+                    if wachtler_hook:
+                        typer.echo(f"[whatson scan] Triggere Wachtler-Hook {wachtler_hook} …", err=True)
+                        subprocess.run(["wachtler", "hooks", "trigger", wachtler_hook], check=False)
+
+                    break  # Stoppen nach erstem Fund
+
+                else:
+                    typer.echo(f"[whatson scan] Keine neuen Nachrichten. Warte {interval}s …", err=True)
+
+            except Exception as exc:
+                typer.echo(f"[whatson scan] FEHLER: {str(exc).split(chr(10))[0][:80]}", err=True)
+
+            # Zurück zur Startseite damit die Session nicht einschläft
+            try:
+                engine.page.goto(WHATSAPP_URL, wait_until="domcontentloaded", timeout=30_000)
+                engine.page.wait_for_selector(SEL_SIDE_PANEL, timeout=15_000)
+            except Exception:
+                pass
+
+            time.sleep(interval)
+    finally:
+        engine.stop()
 
 
 # ──────────────────────────────────────────────────────────────────
