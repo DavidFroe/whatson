@@ -480,17 +480,30 @@ class WhatsAppEngine:
             now = time.monotonic()
             if now - last_render >= 18:
                 try:
+                    # Step 1: try DOM / canvas extraction
                     qr_data = self._extract_qr_data()
-                    if qr_data:
-                        _render_qr_terminal(qr_data)
-                        print("[whatsON] Bitte jetzt QR-Code mit dem Handy scannen …", file=sys.stderr)
-                    else:
-                        # Last resort: save screenshot
+
+                    # Step 2: screenshot → cv2 decode (catches all WA Web versions)
+                    if not qr_data:
                         el = self.page.query_selector(SEL_QR)
                         if el:
                             el.screenshot(path=str(qr_path))
                         else:
                             self.page.screenshot(path=str(qr_path))
+                        try:
+                            import cv2 as _cv2
+                            img = _cv2.imread(str(qr_path))
+                            if img is not None:
+                                text, _, _ = _cv2.QRCodeDetector().detectAndDecode(img)
+                                if text:
+                                    qr_data = text
+                        except Exception:
+                            pass
+
+                    if qr_data:
+                        _render_qr_terminal(qr_data)
+                        print("[whatsON] Bitte jetzt QR-Code mit dem Handy scannen …", file=sys.stderr)
+                    else:
                         print(
                             f"[whatsON] QR-Code als Screenshot gespeichert: {qr_path}\n"
                             f"[whatsON] Tipp: scp <server>:{qr_path} . — dann lokal öffnen.",
