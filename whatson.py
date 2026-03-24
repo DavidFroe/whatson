@@ -296,8 +296,23 @@ WHATSAPP_URL = "https://web.whatsapp.com"
 SEL_QR = "canvas, [data-testid='qrcode'], div[data-ref]"
 
 # Selectors (supporting EN + DE locales)
-SEL_SEARCH_BOX = '[aria-label="Search input textbox"], [aria-label="Sucheingabefeld"], [title="Search input textbox"], [title="Sucheingabefeld"], div[contenteditable="true"][data-tab="3"]'
-SEL_SEARCH_BUTTON = '[title="Search input textbox"], [title="Sucheingabefeld"], button[aria-label="Search or start new chat"], button[aria-label="Suchen oder neuen Chat starten"]'
+SEL_SEARCH_BOX = (
+    '[aria-label="Search input textbox"],'
+    '[aria-label="Sucheingabefeld"],'
+    '[title="Search input textbox"],'
+    '[title="Sucheingabefeld"],'
+    '[data-testid="chat-list-search"],'
+    'div[contenteditable="true"][data-tab="3"],'
+    '#side div[contenteditable="true"],'
+    '#pane-side div[contenteditable="true"]'
+)
+SEL_SEARCH_BUTTON = (
+    '[title="Search input textbox"],'
+    '[title="Sucheingabefeld"],'
+    'button[aria-label="Search or start new chat"],'
+    'button[aria-label="Suchen oder neuen Chat starten"],'
+    '[data-testid="chat-list-search-btn"]'
+)
 SEL_CHAT_ROWS = (
     '[aria-label="Chat list"] [role="listitem"], '
     '[aria-label="Chat list"] [role="row"], '
@@ -616,6 +631,13 @@ class WhatsAppEngine:
                 elapsed = time.monotonic() - _t0
                 typer.echo(f"    [verbose] [{elapsed:.1f}s] {msg}", err=True)
 
+        # Wait for the side panel to be fully interactive before searching
+        try:
+            self.page.wait_for_selector(SEL_SIDE_PANEL, timeout=15_000)
+        except Exception:
+            pass
+        self.page.wait_for_timeout(1_000)
+
         self.page.keyboard.press("Escape")
         self.page.wait_for_timeout(300)
         _vt("Escape gedrückt")
@@ -629,7 +651,7 @@ class WhatsAppEngine:
             pass
         _vt("Suchbutton geklickt")
 
-        search_box = self.page.wait_for_selector(SEL_SEARCH_BOX, timeout=10_000)
+        search_box = self.page.wait_for_selector(SEL_SEARCH_BOX, timeout=20_000)
         if search_box is None:
             raise RuntimeError("Could not find the search box on WhatsApp Web.")
         search_box.click()
