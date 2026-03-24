@@ -424,8 +424,7 @@ class WhatsAppEngine:
         """Try to extract raw QR code data from the WhatsApp Web page.
 
         1) DOM data-ref attribute (legacy WA Web versions)
-        2) Canvas → data URL → cv2.QRCodeDetector (no script injection,
-           no CSP issues, works with current WA Web)
+        2) jsQR injected into the page to decode the canvas (confirmed working)
         Returns empty string if nothing found.
         """
         # 1) DOM attribute – older WA Web versions stored it in data-ref
@@ -438,24 +437,24 @@ class WhatsAppEngine:
         if qr_data and len(qr_data) > 10:
             return qr_data
 
-        # 2) Canvas pixel data → cv2 QR decode (no external scripts needed)
+        # 2) jsQR: inject library, decode the canvas pixel data
         try:
-            data_url: str = self.page.evaluate("""() => {
-                const c = document.querySelector('canvas');
-                return c ? c.toDataURL('image/png') : '';
+            self.page.add_script_tag(
+                url="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"
+            )
+            self.page.wait_for_timeout(800)
+            qr_data = self.page.evaluate("""() => {
+                const canvas = document.querySelector('canvas');
+                if (!canvas) return '';
+                try {
+                    const ctx = canvas.getContext('2d');
+                    const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                    const code = jsQR(d.data, d.width, d.height);
+                    return code ? code.data : '';
+                } catch(e) { return ''; }
             }""")
-            if data_url and data_url.startswith("data:image/"):
-                import base64
-                import numpy as np
-                import cv2 as _cv2
-                _, b64 = data_url.split(",", 1)
-                img_bytes = base64.b64decode(b64)
-                arr = np.frombuffer(img_bytes, dtype=np.uint8)
-                img = _cv2.imdecode(arr, _cv2.IMREAD_COLOR)
-                if img is not None:
-                    text, _, _ = _cv2.QRCodeDetector().detectAndDecode(img)
-                    if text:
-                        return text
+            if qr_data and len(qr_data) > 10:
+                return qr_data
         except Exception:
             pass
 
